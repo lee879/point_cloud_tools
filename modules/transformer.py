@@ -6,16 +6,23 @@ from rmsn import RMSNorm
 class TransformerBlock(nn.Module):
     def __init__(self, in_channels, out_channels, head_nums, dropout_rate=0.0, training=True, mask=None):
         super(TransformerBlock, self).__init__()
-        self.mask = mask
+
+        if training:
+            self.mask = mask
+            self.dropout_rate = dropout_rate
+        else:
+            self.mask = None
+            self.dropout_rate = 0.0
+
         self.rmsn = RMSNorm(in_channels)
         self.attn = MultiAttention(in_channels, head_nums, training, dropout_rate)
         self.mlp = nn.Sequential(
             nn.Linear(in_channels, 2 * in_channels),
             nn.GELU(),
-            nn.Dropout(dropout_rate),
+            nn.Dropout(self.dropout_rate),
             nn.Linear(2 *in_channels, 2 * in_channels),
             nn.GELU(),
-            nn.Dropout(dropout_rate),
+            nn.Dropout(self.dropout_rate),
             nn.Linear(2 * in_channels, out_channels),
         )
     def forward(self, x):
@@ -24,8 +31,6 @@ class TransformerBlock(nn.Module):
         x_norm = self.rmsn(attn_output)
         mlp_output = self.mlp(x_norm)
         return x + mlp_output
-
-
 
 if __name__ == '__main__':
     seq_len = 32
