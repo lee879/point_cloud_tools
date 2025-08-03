@@ -68,3 +68,6 @@ pip install open3d numpy scipy transforms3d
 ---
 
 如需扩展功能，可在 `tools/` 目录下添加更多点云处理方法。
+## 扩展功能
+
+在moduls目录下的transformer_block的支持
