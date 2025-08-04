@@ -1,243 +1,232 @@
-# Transformer模型详细demo文档
+# Transformer模型详细demo文档（初学者友好版）
 
 ## 概述
 
-本文档详细分析了一个基于PyTorch实现的Transformer模型，该模型包含了现代Transformer架构的核心组件：多头注意力机制、RMSNorm归一化、旋转位置编码(RoPE)等。这个实现适合用于demo和理解Transformer的工作原理。
+本项目实现了一个基于PyTorch的Transformer模型，包含了现代Transformer架构的核心组件：多头注意力机制（Multi-Head Attention）、RMSNorm归一化、旋转位置编码（RoPE）、LoRA参数高效微调、MoE专家混合等。文档将以教学视角，详细讲解每个模块的原理、作用、参数和使用方法，适合初学者学习和动手实践。
+
+---
 
 ## 目录结构
 
 ```
 modules/
 ├── transformer.py    # 主要的Transformer块实现
-├── attentions.py     # 多头注意力机制
-├── rmsn.py          # RMSNorm归一化层
-├── rope.py          # 旋转位置编码(RoPE)
-├── moe.py           # 专家混合(待实现)
-└── lora.py          # LoRA适配器(待实现)
+├── attentions.py     # 多头注意力机制（支持LoRA）
+├── rmsn.py           # RMSNorm归一化层
+├── rope.py           # 旋转位置编码(RoPE)
+├── moe.py            # 专家混合(MoE)
+└── lora.py           # LoRA适配器
 ```
 
-## 核心组件详解
+---
 
-### 1. TransformerBlock (transformer.py)
+## 1. TransformerBlock（transformer.py）
 
-#### 类定义
+### 1.1 作用
+TransformerBlock 是Transformer的基本单元，包含：
+- 归一化（RMSNorm）
+- 多头注意力（MultiAttention）
+- 前馈网络（MLP或MoE）
+- 残差连接
+
+### 1.2 参数详解
+| 参数名         | 作用说明                                   |
+|:--------------|:--------------------------------------------|
+| in_channels   | 输入特征维度                                |
+| out_channels  | 输出特征维度                                |
+| head_nums     | 注意力头数                                  |
+| dropout_rate  | Dropout比率，防止过拟合                     |
+| training      | 是否为训练模式，影响Dropout和mask           |
+| mask          | 注意力掩码，控制哪些位置可被关注            |
+| use_moe       | 是否启用MoE专家混合                         |
+| use_lora      | 是否启用LoRA参数高效微调                    |
+| moe_config    | MoE配置字典（专家数、隐藏层、top-k等）       |
+| lora_config   | LoRA配置字典（秩、缩放因子、dropout等）      |
+
+### 1.3 前向传播流程（带注释）
 ```python
-class TransformerBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, head_nums, dropout_rate=0.0, training=True, mask=None):
-```
-
-#### 参数说明
-- `in_channels`: 输入特征维度
-- `out_channels`: 输出特征维度  
-- `head_nums`: 注意力头数
-- `dropout_rate`: Dropout比率
-- `training`: 是否为训练模式
-- `mask`: 注意力掩码
-
-#### 架构组成
-1. **RMSNorm归一化层**: 替代传统的LayerNorm
-2. **多头注意力机制**: 核心的注意力计算
-3. **前馈神经网络**: 包含两个线性层和GELU激活函数
-
-#### 前向传播流程
-```python
+# x: [batch, seq_len, in_channels]
 def forward(self, x):
-    x_norm = self.rmsn(x)                    # 第一次归一化
-    attn_output = self.attn(x_norm, self.mask)  # 注意力计算
-    x_norm = self.rmsn(attn_output)          # 第二次归一化
-    mlp_output = self.mlp(x_norm)            # 前馈网络
-    return x + mlp_output                    # 残差连接
+    x_norm = self.rmsn(x)                    # 步骤1：归一化
+    attn_output = self.attn(x_norm, self.mask)  # 步骤2：多头注意力
+    x_norm = self.rmsn(attn_output)          # 步骤3：再次归一化
+    if self.use_moe:
+        mlp_output = self.moe(x_norm)        # 步骤4a：MoE前馈
+    else:
+        mlp_output = self.mlp(x_norm)        # 步骤4b：标准MLP
+    return x + mlp_output                    # 步骤5：残差连接
 ```
 
-#### demo要点
-- **残差连接**: 每个子层都有残差连接，有助于梯度传播
-- **预归一化**: 在注意力层和前馈层之前进行归一化
-- **训练/推理模式**: 通过training参数控制dropout和mask的使用
-
-### 2. MultiAttention (attentions.py)
-
-#### 类定义
+### 1.4 典型用法
 ```python
-class MultiAttention(nn.Module):
-    def __init__(self, input_dim, head_num, training=True, dropout_rate=0.0):
+from modules.transformer import TransformerBlock
+
+# 基础用法
+block = TransformerBlock(256, 256, 8)
+
+# 启用LoRA
+block_lora = TransformerBlock(256, 256, 8, use_lora=True, lora_config={'rank':8, 'alpha':16, 'dropout':0.1})
+
+# 启用MoE
+block_moe = TransformerBlock(256, 256, 8, use_moe=True, moe_config={'num_experts':4, 'expert_size':512, 'top_k':2})
+
+# 同时启用LoRA和MoE
+block_both = TransformerBlock(256, 256, 8, use_lora=True, use_moe=True,
+    lora_config={'rank':8, 'alpha':16}, moe_config={'num_experts':4})
+
+# 前向传播
+x = torch.randn(2, 32, 256)
+out = block_both(x)
+print(out.shape)
 ```
 
-#### 核心特性
-1. **QKV融合**: 使用单个线性层同时计算Q、K、V
-2. **RoPE位置编码**: 集成旋转位置编码
-3. **Flash Attention支持**: 自动检测并使用优化的注意力计算
-4. **掩码支持**: 支持因果掩码和自定义掩码
+---
 
-#### 注意力计算流程
+## 2. MultiAttention（attentions.py）
 
-##### 步骤1: QKV计算和重塑
+### 2.1 原理简介
+多头注意力机制可以让模型在不同子空间并行关注不同信息。其核心流程：
+- 输入通过线性层生成Q（查询）、K（键）、V（值）
+- 计算注意力分数，聚合信息
+- 多个头并行，最后拼接
+
+### 2.2 关键参数
+- `input_dim`：输入特征维度
+- `head_num`：头数，越多表达力越强
+- `use_lora`：是否对注意力权重用LoRA微调
+- `lora_config`：LoRA参数
+
+### 2.3 LoRA背景知识
+LoRA（Low-Rank Adaptation）是一种高效微调大模型的方法。它只训练很小的低秩矩阵，大幅减少参数量和显存消耗，适合下游任务微调。
+
+### 2.4 典型用法
 ```python
-qkv = self.qkv(x)  # [batch_size, seq_len, input_dim * 3]
-q, k, v = torch.chunk(qkv, 3, dim=-1)  # 分离Q、K、V
-
-# 重塑为多头格式
-q = q.view(batch_size, seq_len, self.head_nums, self.head_dim)
-k = k.view(batch_size, seq_len, self.head_nums, self.head_dim)
-v = v.view(batch_size, seq_len, self.head_nums, self.head_dim)
+from modules.attentions import MultiAttention
+attn = MultiAttention(256, 8, use_lora=True, lora_config={'rank':4, 'alpha':8})
 ```
 
-##### 步骤2: 位置编码应用
-```python
-q = self.rope(q)  # 应用旋转位置编码
-k = self.rope(k)
+---
 
-# 交换维度: [batch_size, num_heads, seq_len, head_dim]
-q = q.transpose(1, 2)
-k = k.transpose(1, 2)
-v = v.transpose(1, 2)
-```
+## 3. RMSNorm（rmsn.py）
 
-##### 步骤3: 注意力计算
-```python
-# 使用Flash Attention (如果可用)
-if hasattr(F, 'scaled_dot_product_attention'):
-    attn = F.scaled_dot_product_attention(q, k, v, mask, dropout_p=self.dropout_rate)
-else:
-    # 标准注意力计算
-    scores = torch.matmul(q, k.transpose(2, 3)) / (self.head_dim ** 0.5)
-    if mask is not None:
-        scores = scores.masked_fill(mask == 0, -1e9)
-    attn = torch.matmul(F.softmax(scores, dim=-1), v)
-```
+### 3.1 原理简介
+RMSNorm是LayerNorm的简化版，只用均方根归一化，不减均值，速度快、参数少。
 
-#### demo要点
-- **缩放点积注意力**: 使用`sqrt(head_dim)`进行缩放
-- **掩码机制**: 通过设置极大负值实现掩码效果
-- **多头并行**: 多个注意力头并行计算，最后合并
-- **残差连接**: 输出与输入相加
-
-### 3. RMSNorm (rmsn.py)
-
-#### 类定义
+### 3.2 代码片段
 ```python
 class RMSNorm(nn.Module):
     def __init__(self, dim, eps=1e-6):
+        ...
+    def forward(self, x):
+        rms = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        return x * rms * self.w
 ```
 
-#### 工作原理
-RMSNorm是LayerNorm的简化版本，只计算均方根而不计算均值：
+---
 
-```python
-def forward(self, x):
-    rms = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-    return x * rms * self.w
-```
+## 4. RoPE（rope.py）
 
-#### 与LayerNorm的区别
-- **LayerNorm**: `(x - mean) / sqrt(variance + eps) * weight + bias`
-- **RMSNorm**: `x / sqrt(mean(x²) + eps) * weight`
+### 4.1 原理简介
+RoPE（旋转位置编码）通过复数旋转将位置信息编码进特征，支持长序列外推。
 
-#### demo要点
-- **计算效率**: RMSNorm比LayerNorm更快
-- **稳定性**: 在某些情况下提供更好的训练稳定性
-- **参数数量**: 只有权重参数，没有偏置参数
-
-### 4. RoPE (rope.py)
-
-#### 类定义
+### 4.2 代码片段
 ```python
 class Rope(nn.Module):
-    def __init__(self, head_dim: int, base: int = 100000):
+    def __init__(self, head_dim, base=10000):
+        ...
+    def forward(self, x):
+        ... # 见源码
 ```
 
-#### 核心概念
-旋转位置编码(RoPE)通过旋转操作将位置信息编码到向量中：
+---
 
-#### 实现步骤
+## 5. MoEFeedForward（moe.py）
 
-##### 步骤1: 计算逆频率
+### 5.1 MoE是什么？
+MoE（Mixture of Experts）是一种稀疏激活的前馈网络。每次只激活部分专家，大幅提升模型容量但计算量只略增。
+
+### 5.2 关键参数
+- `num_experts`：专家数量
+- `expert_size`：每个专家的隐藏层大小
+- `top_k`：每个输入最多激活几个专家
+
+### 5.3 典型用法
 ```python
-def _compute_inv_freq(self):
-    k = torch.arange(0, self.head_dim, 2, dtype=torch.float32)
-    return 1 / (self.base ** (k / self.head_dim))
+from modules.moe import MoEFeedForward
+moe = MoEFeedForward(256, 0.1, num_experts=4, expert_size=512, top_k=2)
 ```
 
-##### 步骤2: 旋转操作
+---
+
+## 6. LoRAAdapter/LoRALinear（lora.py）
+
+### 6.1 LoRA原理
+LoRA通过低秩分解，只训练很小的A、B矩阵，冻结原始大权重，极大节省参数和显存。
+
+### 6.2 用法
+- `LoRALinear`：直接替换nn.Linear
+- `LoRAAdapter`：包裹已有nn.Linear
+
 ```python
-def _rota_half_emb(self, x):
-    x0, x1 = x.chunk(2, dim=-1)  # 将向量分成两半
-    return torch.cat((-x1, x0), dim=-1)  # 交换并取负
+from modules.lora import LoRALinear, LoRAAdapter
+layer = nn.Linear(256, 256)
+lora_layer = LoRAAdapter(layer, rank=8, alpha=16)
 ```
 
-##### 步骤3: 应用旋转
+---
+
+## 7. 综合示例与建议
+
+### 7.1 综合用法
 ```python
-def _apply_rope(self, x, freq):
-    cos = torch.cos(freq)
-    sin = torch.sin(freq)
-    return x * cos + self._rota_half_emb(x) * sin
+import torch
+from modules.transformer import TransformerBlock
+
+# 配置
+lora_config = {'rank': 8, 'alpha': 16, 'dropout': 0.1}
+moe_config = {'num_experts': 4, 'expert_size': 512, 'top_k': 2}
+
+# 创建支持LoRA和MoE的TransformerBlock
+block = TransformerBlock(256, 256, 8, use_lora=True, lora_config=lora_config, use_moe=True, moe_config=moe_config)
+
+# 输入
+x = torch.randn(2, 32, 256)
+output = block(x)
+print('输出形状:', output.shape)
+
+# 获取MoE专家使用情况
+usage = block.get_expert_usage(x)
+print('专家使用统计:', usage)
 ```
 
-#### demo要点
-- **相对位置**: RoPE编码相对位置信息
-- **外推能力**: 支持序列长度外推
-- **数学原理**: 基于复数旋转的数学原理
+### 7.2 学习建议
+1. **先理解基础注意力机制**：建议先手写单头注意力，理解Q、K、V的含义。
+2. **逐步加深**：多头注意力、位置编码、归一化、残差连接。
+3. **动手调试**：多打印中间变量，画图理解注意力分布。
+4. **尝试不同配置**：如只用MLP、只用MoE、只用LoRA、全部叠加。
+5. **查阅资料**：推荐阅读《Attention is All You Need》、LoRA和MoE相关论文。
 
-## 使用示例
+---
 
-### 基本使用
-```python
-# 创建Transformer块
-seq_len = 32
-in_channels = 256
-out_channels = 256
-head_nums = 8
-dropout_rate = 0.0
-training = True
-mask = None
+## 8. 常见问题解答（FAQ）
 
-# 输入数据
-input_data = torch.randn(1, seq_len, in_channels)
+- **Q: LoRA和MoE能一起用吗？**
+  A: 可以，二者互不影响，LoRA节省参数，MoE提升容量。
+- **Q: 如何只用标准Transformer？**
+  A: 不传use_lora/use_moe参数即可。
+- **Q: 如何调大模型容量？**
+  A: 增加head_nums、in_channels、num_experts等。
+- **Q: 为什么用RMSNorm不用LayerNorm？**
+  A: RMSNorm更快、参数更少，适合大模型。
 
-# 创建模型
-transformer_block = TransformerBlock(
-    in_channels, out_channels, head_nums, 
-    dropout_rate=dropout_rate, training=training, mask=mask
-)
+---
 
-# 前向传播
-output = transformer_block(input_data)
-print(f"输出形状: {output.shape}")  # torch.Size([1, 32, 256])
-```
+## 9. 参考资料
+- [Attention is All You Need](https://arxiv.org/abs/1706.03762)
+- [RMSNorm论文](https://arxiv.org/abs/1910.07467)
+- [LoRA论文](https://arxiv.org/abs/2106.09685)
+- [MoE论文](https://arxiv.org/abs/1701.06538)
 
-### 训练模式 vs 推理模式
-```python
-# 训练模式
-transformer_train = TransformerBlock(256, 256, 8, dropout_rate=0.1, training=True)
+---
 
-# 推理模式
-transformer_infer = TransformerBlock(256, 256, 8, dropout_rate=0.1, training=False)
-```
-
-## demo建议
-
-### 1. 渐进式学习
-1. **从基础开始**: 先理解注意力机制的基本概念
-2. **逐步深入**: 学习多头注意力、位置编码等高级概念
-3. **实践结合**: 通过代码调试理解每个组件的作用
-
-### 2. 关键概念重点
-- **注意力权重**: 理解如何计算和解释注意力权重
-- **位置编码**: 理解为什么需要位置编码以及不同编码方式的区别
-- **归一化**: 理解不同归一化方法的作用和区别
-- **残差连接**: 理解残差连接对训练的重要性
-
-### 3. 调试技巧
-- 使用小批量数据进行测试
-- 打印中间结果理解数据流
-- 使用可视化工具观察注意力权重
-- 逐步增加模型复杂度
-
-### 4. 扩展学习
-- 研究不同位置编码方法
-- 了解注意力机制的变体
-- 学习模型压缩和优化技术
-- 探索大规模语言模型的应用
-
-## 总结
-
-这个Transformer实现包含了现代Transformer架构的核心组件，代码结构清晰，适合demo使用。通过理解每个组件的实现细节，可以深入掌握Transformer模型的工作原理，为进一步的研究和应用打下坚实基础。 
+本项目代码结构清晰，注释丰富，适合初学者逐步学习和实验。欢迎多尝试不同配置，深入理解每个模块的作用！ 
